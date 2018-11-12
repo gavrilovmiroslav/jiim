@@ -1,2 +1,2 @@
-# jiim -- Java Invariant Inferencing Machine
+## JIIM -- Java Invariant Inferencing Machine
 
