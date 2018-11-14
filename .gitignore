@@ -1,3 +1,5 @@
 libjiim.so
 bin/
 *.jar
+*.java
+*.class
