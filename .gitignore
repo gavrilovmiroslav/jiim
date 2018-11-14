@@ -3,3 +3,4 @@ bin/
 *.jar
 *.java
 *.class
+*.log

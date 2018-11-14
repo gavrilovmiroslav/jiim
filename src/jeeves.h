@@ -9,19 +9,32 @@
 #include <cstring>
 #include <iostream>
 #include <cstdio>
+#include <functional>
+using namespace std::placeholders;
 
 namespace jiim {
 
 class jeeves {
 protected:
-
 	JavaVM *vm;
 	jvmtiEnv *env;
+	JNIEnv *jni;
 	jvmtiCapabilities caps;
 	jvmtiEventCallbacks callbacks;
 	std::set<jvmtiEvent> notifs;
 
 public:
+
+	inline JNIEnv *get_jni() const 
+	{
+		return jni;
+	}
+
+	inline jvmtiEnv *get_env() const
+	{
+		return env;
+	}
+
 	jeeves(JavaVM *_vm)
 		: vm(_vm)
 	{
@@ -123,7 +136,6 @@ public:
     jeeves* sends_data_dump_request_to(jvmtiEventDataDumpRequest);
     jeeves* sends_garbage_collection_start_to(jvmtiEventGarbageCollectionStart);
     jeeves* sends_garbage_collection_finish_to(jvmtiEventGarbageCollectionFinish);
-    jeeves* sends_vm_object_alloc_to(jvmtiEventVMObjectAlloc);
 };
 
 }

@@ -11,4 +11,4 @@ bin/%.o: src/%.cc
 	$(CXX) $(JVMTI_HEADER) -Wall -c -fPIC $< -o $@ -lc
 
 clean:
-	rm -rf $(EXPORT_LIB_NAME) *.o
+	rm -rf $(EXPORT_LIB_NAME) bin/*.o
