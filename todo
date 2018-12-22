@@ -1,0 +1,2 @@
+- add negative qualifiers, like for ~com.watabou.pixeldungeon.scenes
+- add generic signature parsing in case signature fails

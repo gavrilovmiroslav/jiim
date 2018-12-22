@@ -106,7 +106,7 @@ jeeves* jeeves::listens_to_field_access()
 jeeves* jeeves::listens_to_single_steps()
 {
 	caps.can_generate_single_step_events = 1;
-	notifs.insert(JVMTI_EVENT_SINGLE_STEP);
+	start_single_stepping = true;
 	return this;
 }
 

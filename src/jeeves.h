@@ -15,15 +15,17 @@ using namespace std::placeholders;
 namespace jiim {
 
 class jeeves {
-protected:
+public:
 	JavaVM *vm;
+	bool start_single_stepping;
+
 	jvmtiEnv *env;
 	JNIEnv *jni;
 	jvmtiCapabilities caps;
 	jvmtiEventCallbacks callbacks;
 	std::set<jvmtiEvent> notifs;
 
-public:
+	bool status_single_stepping;
 
 	inline JNIEnv *get_jni() const 
 	{
@@ -37,7 +39,10 @@ public:
 
 	jeeves(JavaVM *_vm)
 		: vm(_vm)
+		, start_single_stepping(false)
+		, status_single_stepping(false)
 	{
+
 		(void)memset(&caps, 0, sizeof(jvmtiCapabilities));
 		(void)memset(&callbacks, 0, sizeof(callbacks));
 
@@ -48,6 +53,7 @@ public:
 			exit(-1);
 		}
 	}
+
 
 	jvmtiError boot()
 	{
@@ -69,10 +75,44 @@ public:
 		return error;
 	}
 
+	void single_step_on()
+	{
+		auto error = env->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_SINGLE_STEP, nullptr);
+		if(error != JVMTI_ERROR_NONE) 
+		{
+			std::cerr << "Cannot enable single stepping!" << std::endl;
+			exit(-1);
+		}
+		status_single_stepping = true;
+	}
+
+	void single_step_off()
+	{
+		auto error = env->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_SINGLE_STEP, nullptr);
+		if(error != JVMTI_ERROR_NONE) 
+		{
+			std::cerr << "Cannot disable single stepping!" << std::endl;
+			exit(-1);
+		}
+		status_single_stepping = false;
+	}
+
 	~jeeves()
 	{}
 
 	inline jeeves* prepare() {
+		return this;
+	}
+
+	inline jeeves* create_lock(jrawMonitorID& lock)
+	{
+		auto error = env->CreateRawMonitor("jiim+jeeves", &lock);
+		if(error != JVMTI_ERROR_NONE) 
+		{
+			std::cerr << "Cannot create raw monitor!" << std::endl;
+			exit(-1);
+		}
+		
 		return this;
 	}
 
