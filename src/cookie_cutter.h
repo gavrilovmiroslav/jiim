@@ -40,15 +40,45 @@ namespace jiim
 	    return ret;
 	}
 
+	union jvalue_plus
+	{
+	    jboolean z; 
+	    jbyte    b; 
+	    jchar    c; 
+	    jshort   s; 
+	    jint     i; 
+	    jlong    j; 
+	    jfloat   f; 
+	    jdouble  d; 
+	    jobject  o;
+	    char* w;
+
+	    jvalue_plus()
+	    {}
+
+		jvalue_plus(const jvalue& other)
+		{
+			this->o = other.l;
+		}
+
+		~jvalue_plus() {}
+	};
+
 	namespace cookie_cutter
 	{
+
 		struct tagged_jvalue
 		{
-			jvalue value;
+			jvalue_plus value;
 			unsigned char tag;
 
-			tagged_jvalue(unsigned char tag, jvalue value)
+			tagged_jvalue(unsigned char tag, jvalue_plus value)
 				: value(value)
+				, tag(tag)
+			{}
+
+			tagged_jvalue(char& tag, jvalue& value)
+				: value((jvalue_plus)value)
 				, tag(tag)
 			{}
 
@@ -67,7 +97,8 @@ namespace jiim
 					case 'D': valuation = { { "tag", "D" }, { "value", value.d } }; break;
 					case 'F': valuation = { { "tag", "F" }, { "value", value.f } }; break;
 					case 'J': valuation = { { "tag", "J" }, { "value", value.j } }; break;
-					case 'L': valuation = { { "tag", "L" }, { "value", value.j } }; break;
+					case 'W': valuation = { { "tag", "W" }, { "value", std::string(value.w) } }; break;
+//					case 'O': valuation = { { "tag", "O" }, { "value", value.o } }; break;
 					default: valuation = { { "tag", tag }, "value", value.j }; break;
 				}
 
@@ -88,7 +119,8 @@ namespace jiim
 				case 'D': sprintf(output, "%f", v.value.d); break;
 				case 'F': sprintf(output, "%f", v.value.f); break;
 				case 'J': sprintf(output, "%lu", v.value.j); break;
-				case 'L': sprintf(output, "%p", v.value.l); break;
+				case 'W': sprintf(output, "%s", v.value.w); break;
+				case 'L': sprintf(output, "%p", v.value.o); break;
 				default: sprintf(output, "<unknown>"); break;
 			}
 
@@ -96,10 +128,12 @@ namespace jiim
 			return stream;
     	}    	
 
-		tagged_jvalue get_value_by_signature(jvmtiEnv* jvmti_env, jthread thread, jmethodID method, jvmtiLocalVariableEntry entry)
+		tagged_jvalue get_value_by_signature(jvmtiEnv* jvmti_env, JNIEnv* jni_env, jthread thread, jmethodID method, jvmtiLocalVariableEntry entry)
 		{
-			jvalue value;
+			char tag = entry.signature[0];
+			jvalue_plus value;
 			jvmtiError error;
+
 			switch(entry.signature[0])
 			{
 				case 'B': { jint v; error = jvmti_env->GetLocalInt(thread, 0, entry.slot, &v); value.b = v; } break;
@@ -110,7 +144,25 @@ namespace jiim
 				case 'D': { jdouble v; error = jvmti_env->GetLocalDouble(thread, 0, entry.slot, &v); value.d = v; } break;
 				case 'F': { jfloat v; error = jvmti_env->GetLocalFloat(thread, 0, entry.slot, &v); value.f = v; } break;
 				case 'J': { jlong v; error = jvmti_env->GetLocalLong(thread, 0, entry.slot, &v); value.j = v; } break;
-				case 'L': { jobject v; error = jvmti_env->GetLocalObject(thread, 0, entry.slot, &v); value.l = v; } break;
+				case 'L': 
+				{ 
+					jobject v; 
+					error = jvmti_env->GetLocalObject(thread, 0, entry.slot, &v); 
+					if(error == JVMTI_ERROR_NONE && strcmp(entry.signature, "Ljava/lang/String;") == 0)
+					{
+						jstring s = (jstring)v;
+						jboolean isCopy;
+						const char* chars = jni_env->GetStringUTFChars(s, &isCopy);
+						tag = 'W';
+						value.w = const_cast<char*>(chars);
+					}
+					else
+					{
+						tag = 'O';
+						value.o = v;
+					}
+				} 
+				break;
 				default: return tagged_jvalue('N', value);
 			}
 
@@ -153,26 +205,26 @@ namespace jiim
 			// 	return tagged_jvalue('N', value);
 			// }
 
-			return tagged_jvalue(entry.signature[0], value);
+			return tagged_jvalue(tag, value);
 		}
 
-		tagged_jvalue get_field_by_signature(jvmtiEnv* jvmti_env, JNIEnv* jni_env, jclass cls, jfieldID field, char* sig, unsigned int mods)
+		tagged_jvalue get_field_by_signature(jvmtiEnv* jvmti_env, JNIEnv* jni_env, jclass cls, jobject obj, jfieldID field, char* sig, unsigned int mods)
 		{
 			bool is_static = mods & 0x0008;
-			jvalue value;
+			jvalue_plus value;
 			try 
 			{
 				switch(sig[0])
 				{
-					case 'B': { value.b = is_static ? jni_env->GetStaticByteField(cls, field) : jni_env->GetByteField(cls, field); } break;
-					case 'C': { value.c = is_static ? jni_env->GetStaticCharField(cls, field) : jni_env->GetCharField(cls, field); } break;
-					case 'I': { value.i = is_static ? jni_env->GetStaticIntField(cls, field) : jni_env->GetIntField(cls, field); } break;
-					case 'S': { value.s = is_static ? jni_env->GetStaticShortField(cls, field) : jni_env->GetShortField(cls, field); } break;
-					case 'Z': { value.z = is_static ? jni_env->GetStaticBooleanField(cls, field) : jni_env->GetBooleanField(cls, field); } break;
-					case 'D': { value.d = is_static ? jni_env->GetStaticDoubleField(cls, field) : jni_env->GetDoubleField(cls, field); } break;
-					case 'F': { value.f = is_static ? jni_env->GetStaticFloatField(cls, field) : jni_env->GetFloatField(cls, field); } break;
-					case 'J': { value.j = is_static ? jni_env->GetStaticLongField(cls, field) : jni_env->GetLongField(cls, field); } break;
-					case 'L': { value.l = is_static ? jni_env->GetStaticObjectField(cls, field) : jni_env->GetObjectField(cls, field); } break;
+					case 'B': { value.b = is_static ? jni_env->GetStaticByteField(cls, field) : jni_env->GetByteField(obj, field); } break;
+					case 'C': { value.c = is_static ? jni_env->GetStaticCharField(cls, field) : jni_env->GetCharField(obj, field); } break;
+					case 'I': { value.i = is_static ? jni_env->GetStaticIntField(cls, field) : jni_env->GetIntField(obj, field); } break;
+					case 'S': { value.s = is_static ? jni_env->GetStaticShortField(cls, field) : jni_env->GetShortField(obj, field); } break;
+					case 'Z': { value.z = is_static ? jni_env->GetStaticBooleanField(cls, field) : jni_env->GetBooleanField(obj, field); } break;
+					case 'D': { value.d = is_static ? jni_env->GetStaticDoubleField(cls, field) : jni_env->GetDoubleField(obj, field); } break;
+					case 'F': { value.f = is_static ? jni_env->GetStaticFloatField(cls, field) : jni_env->GetFloatField(obj, field); } break;
+					case 'J': { value.j = is_static ? jni_env->GetStaticLongField(cls, field) : jni_env->GetLongField(obj, field); } break;
+					case 'L': { value.o = is_static ? jni_env->GetStaticObjectField(cls, field) : jni_env->GetObjectField(obj, field); } break;
 					default: ;
 				}
 	
@@ -201,21 +253,30 @@ namespace jiim
 				jfieldID* field_table;
 
 				auto entry = local_variable_table[i];
-				auto v = get_value_by_signature(jvmti_env, thread, method, local_variable_table[i]);
-				if(v.tag == 'N') continue;
+				auto v = get_value_by_signature(jvmti_env, jni_env, thread, method, local_variable_table[i]);
+				if(v.tag == 'N') {
+					continue;
+				}
 
 				bindings.emplace(entry.name, v);
 
 				if(entry.signature[0] == 'L')
 				{
 					bool target_found = false;
-
-					for(auto target: targets)
+					
+					if(strcmp(entry.signature, "Ljava/lang/String;") == 0)
 					{
-						if(boost::starts_with(entry.signature, target))
+						target_found = false;
+					}
+					else
+					{
+						for(auto target: targets)
 						{
-							target_found = true;
-							break;
+							if(boost::starts_with(entry.signature, target))
+							{
+								target_found = true;
+								break;
+							}
 						}
 					}
 
@@ -223,9 +284,9 @@ namespace jiim
 					{
 						jclass cls;
 
-						if(v.value.l != nullptr)
+						if(v.value.o != nullptr)
 						{
-							cls = jni_env->GetObjectClass(v.value.l);
+							cls = jni_env->GetObjectClass(v.value.o);
 
 							jvmti_env->GetClassFields(cls, &field_entry_count, &field_table);
 
@@ -237,7 +298,7 @@ namespace jiim
 								jvmti_env->GetFieldName(cls, field_table[j], &name, &sig, nullptr);
 								jvmti_env->GetFieldModifiers(cls, field_table[j], &mods);
 
-								auto field_value = get_field_by_signature(jvmti_env, jni_env, cls, field_table[j], sig, mods);
+								auto field_value = get_field_by_signature(jvmti_env, jni_env, cls, v.value.o, field_table[j], sig, mods);
 								if(field_value.tag == 'N') continue;
 
 								std::stringstream ss;

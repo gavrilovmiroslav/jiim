@@ -15,8 +15,6 @@ q = ch.queue("jiim").bind(x)
 
 loop do
 	text, sender = s.recvfrom(8192)
-	puts text
-	puts
 	q.publish(text)
 end
 
