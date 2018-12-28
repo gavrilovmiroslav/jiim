@@ -1,4 +1,6 @@
 
+#include <time.h>
+#include <stdlib.h>
 #include <jni.h>
 #include <jvmti.h>
 #include <iostream>
@@ -16,7 +18,7 @@
 #include <boost/shared_ptr.hpp>
 #include <boost/format.hpp>
 #include <boost/algorithm/string.hpp>
-
+#include <utility>
 #include "jvmti_utils.h"
 #include "jeeves.h"
 #include "cookie_cutter.h"
@@ -27,6 +29,7 @@ static bool mainReached = false;
 
 static jiim::jeeves* jeeves;
 
+static unsigned long long message_counter; 
 static std::vector<std::string> start_targets;
 static std::vector<std::string> follow_targets;
 
@@ -42,6 +45,8 @@ static std::unordered_map<jmethodID, std::string> method_names_cache;
 static std::unordered_map<jmethodID, std::vector<unsigned char>*> method_bytecodes;
 static std::unordered_map<jmethodID, jclass> declaring_class;
 static std::unordered_map<jthread, int> waiting_for_single_steps;
+
+static std::unordered_map<std::size_t, long long> over_the_top;
 
 static std::set<unsigned char> snapshot_instructions { 
 
@@ -101,6 +106,8 @@ std::string get_method_name(jvmtiEnv* jvmti_env, jmethodID method)
 
 JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved)
 {
+	srand(time(NULL));   // Initialization, should only be called once.
+	message_counter = 1;
 	mainReached = false;
 	jeeves = new jiim::jeeves(vm);
 
@@ -184,10 +191,11 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved)
 			if(mainReached)
 			{
 				std::string name = "";
+				bool following = false;
 
 				if(method_names_cache.count(method) == 0)
 				{
-					name = get_method_name(jvmti_env, method);					
+					name = get_method_name(jvmti_env, method);
 					boost::trim(name);
 
 					bool target_found = false;
@@ -197,6 +205,8 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved)
 						if(boost::starts_with(name, target))
 						{
 							method_names_cache.emplace(method, name);
+							following = true;
+							break;
 						}
 					}
 
@@ -219,13 +229,13 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved)
 					name = method_names_cache[method];
 				}
 
-				json j = { { "method_entry", { { "name", name }, } } };
+				// json j = { { "method_entry", { { "name", name }, } } };
 
-				std::string msg = j.dump();
+				// std::string msg = j.dump();
 
-				boost::system::error_code err;
-				sock.send_to(boost::asio::buffer(msg.c_str(), msg.size()), 
-					remote_endpoint, 0, err);
+				// boost::system::error_code err;
+				// sock.send_to(boost::asio::buffer(msg.c_str(), msg.size()), 
+				// 	remote_endpoint, 0, err);
 
 				jint bytecode_count; 
 				unsigned char* bytecode_array;
@@ -240,6 +250,35 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved)
 					}
 
 					jvmti_env->Deallocate(bytecode_array);
+				}
+
+				if(following)
+				{
+					json bindings;
+
+					auto variables = jiim::cookie_cutter::get_variable_bindings(jvmti_env, jni_env, thread, method, follow_targets);
+					if(variables.size() > 0)
+					{
+						for(auto bound : variables)
+						{
+							bindings[bound.first] = bound.second.to_json();
+						}
+
+						json j = {
+							{ "report", { 
+								{ "index", message_counter++ },
+								{ "method", method_names_cache[method] }, 
+								{ "location", 1 }, 
+								{ "bindings", bindings },
+							} }
+						};
+
+						std::string msg = j.dump();
+
+						boost::system::error_code err;
+						sock.send_to(boost::asio::buffer(msg.c_str(), msg.size()), 
+							remote_endpoint, 0, err);
+					}					
 				}
 			}
 
@@ -260,16 +299,66 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved)
 					return;
 				}
 
-				json j = { { "method_exit", { { "name", name }, } } };
+				jint bytecode_count;
+				unsigned char* bytecode_array;
 
-				std::string msg = j.dump();
-				method_names_cache.emplace(method, msg);
+				auto result = jvmti_env->GetBytecodes(method, &bytecode_count, &bytecode_array);
 
-				boost::system::error_code err;
-				sock.send_to(boost::asio::buffer(msg.c_str(), msg.size()), 
-					remote_endpoint, 0, err);
+				if(result == JNI_OK)
+				{
+					char *mname;
+				    char *sig;
+				    char *gsig;
+				    check_jvmti_error(jvmti_env, 
+				    	jvmti_env->GetMethodName(method, &mname, &sig, &gsig), 
+				    	"Unable to get method name");
+			
+					auto sign = ((gsig == NULL) ? sig : gsig);
+					int i = 0;
+					for(; sign[i] != ')'; i++); 
+					i++;
+
+					char return_type = sign[i];
+
+					if(mname) jvmti_env->Deallocate((unsigned char*)(mname));
+					if(sig) jvmti_env->Deallocate((unsigned char*)(sig));
+					if(gsig) jvmti_env->Deallocate((unsigned char*)(gsig));
+
+					json bindings;
+
+					auto variables = jiim::cookie_cutter::get_variable_bindings(jvmti_env, jni_env, thread, method, follow_targets);
+					for(auto bound : variables)
+					{
+						bindings[bound.first] = bound.second.to_json();
+					}
+
+					if(return_type != 'V' && return_type != '[')
+					{
+						bindings[".return"] = jiim::cookie_cutter::tagged_jvalue(return_type, return_value).to_json();
+					}
+
+					if(bindings.size() > 0)
+					{
+						json j = { 
+							{ "report", { 
+								{ "index", message_counter++ }, 
+								{ "method", name }, 
+								{ "location", bytecode_count },
+								{ "bindings", bindings }
+							} } 
+						};
+
+						std::string msg = j.dump();
+						method_names_cache.emplace(method, msg);
+
+						boost::system::error_code err;
+						sock.send_to(boost::asio::buffer(msg.c_str(), msg.size()), 
+							remote_endpoint, 0, err);
+					}
+				}
+
+				if(bytecode_array) jvmti_env->Deallocate(bytecode_array);
 			}
-
 		})
 
 		->sends_single_step_to([](jvmtiEnv *jvmti_env, JNIEnv* jni_env, jthread thread, jmethodID method, jlocation location) 
@@ -280,6 +369,16 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved)
 				//  because it tells us whether the method in question is native or not!
 				if(method_bytecodes.count(method) > 0)
 				{
+					std::size_t pair = std::hash<long>{}((long) method) ^ std::hash<long>{}((long)location);
+
+					// if(over_the_top.count(pair) == 0)
+					// {
+					// 	over_the_top[pair] = 0;
+					// }
+					over_the_top[pair]++;
+
+					if((float)over_the_top[pair] / (float)message_counter > 0.5f) return;
+
 					std::vector<unsigned char> instructions = *(method_bytecodes[method]);
 					auto inst = instructions[location];
 
@@ -303,10 +402,11 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved)
 								bindings[bound.first] = bound.second.to_json();
 							}
 
-							json j = { 
-								{ "variable_bindings", { 
-									{ "method", method_names_cache[method] }, 
-									{ "location", location }, 
+							json j = {
+								{ "variable_bindings", {
+									{ "index", message_counter++ },
+									{ "method", method_names_cache[method] },
+									{ "location", location },
 									{ "bindings", bindings },
 								} }
 							};
